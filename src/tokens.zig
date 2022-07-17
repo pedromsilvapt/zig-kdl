@@ -173,6 +173,46 @@ pub const Token = struct {
             unreachable;
         }
     }
+
+    pub fn toScalar(self: *const Token, allocator: Allocator) !Scalar {
+        if (self.kind == .raw_string or self.kind == .escaped_string) {
+            return Scalar{ .string = try self.toString(allocator) };
+        } else if (self.kind == .decimal) {
+            return Scalar{ .decimal = try self.toDecimal() };
+        } else if (self.kind == .signed_integer or
+            self.kind == .hex or
+            self.kind == .octal or
+            self.kind == .binary)
+        {
+            return Scalar{ .integer = try self.toInteger() };
+        } else if (self.kind == .keyword) {
+            if (std.mem.eql(u8, self.text, "true")) {
+                return Scalar{ .boolean = true };
+            } else if (std.mem.eql(u8, self.text, "false")) {
+                return Scalar{ .boolean = false };
+            } else if (std.mem.eql(u8, self.text, "null")) {
+                return Scalar{ .none = {} };
+            } else {
+                return error.InvalidScalarToken;
+            }
+        } else {
+            return error.InvalidScalarToken;
+        }
+    }
+
+    pub const Scalar = union(enum) {
+        string: []const u8,
+        integer: i64,
+        decimal: f64,
+        boolean: bool,
+        none: void,
+
+        pub fn deinit(self: *Scalar, allocator: Allocator) void {
+            if (self.* == .string) {
+                allocator.free(self.string);
+            }
+        }
+    };
 };
 
 pub const TokenMatchers = struct {
@@ -498,12 +538,6 @@ pub const Tokenizer = struct {
             if (self.match(TokenMatchers.keyword)) {
                 return self.createToken(.keyword);
             }
-
-            const offset_start = self.reader.location.offset;
-            const offset_end = std.math.min(offset_start + 10, self.reader.uft8_iterator.bytes.len);
-            std.debug.print("\n\nFAIL HERE: <<<{s}>>>\n\n", .{
-                self.reader.uft8_iterator.bytes[offset_start..offset_end],
-            });
 
             return error.InvalidToken;
         }

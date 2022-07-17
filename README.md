@@ -25,7 +25,7 @@ pub fn main () !void {
 
     var allocator = &general_purpose_allocator.allocator;
 
-    var parser = try Parser.init(allocator,
+    var parser = try Parser.init(
         \\ package {
         \\     name "foo"
         \\     version "1.0.0"
@@ -40,35 +40,36 @@ pub fn main () !void {
 
     while (try parser.next()) |element| {
         // Handle element
+        if (element == .node_begin) {
+            var name = try element.node_begin.name.toString(allocator);
+            defer allocator.free(name);
+
+            std.debug.print("Node name: {s}\n", .{ name });
+        }
     }
 }
 ```
 
+The parser does not allocate any memory during it's execution. Inside it's elements, it always returns pointers to inside the buffer provided by the caller.
+
+It is the responsability of the caller to tell when to allocate the memory needed.
+
 The type of elements is:
 ```zig
-
 pub const Element = union(enum) {
     pub const NodeBegin = struct {
-        name: []const u8,
-        type_name: ?[]const u8,
+        name: Token,
+        type_name: ?Token,
     };
 
     pub const Property = struct {
-        name: []const u8,
+        name: Token,
         value: Value,
     };
 
     pub const Value = struct {
-        type_name: ?[]const u8,
-        data: ValueData,
-    };
-
-    pub const ValueData = union(enum) {
-        string: []const u8,
-        integer: i64,
-        decimal: f64,
-        boolean: bool,
-        none: void,
+        type_name: ?Token,
+        data: Token,
     };
 
     node_begin: NodeBegin,
@@ -78,10 +79,22 @@ pub const Element = union(enum) {
 };
 ```
 
+The caller can convert tokens into values using the functions `token.toString(allocator)`, `token.toInteger()` and `token.toDecimal()`, if they know the type of the token is one of those. Or they can use the more generic `token.toScala(allocator)`, which returns a union with the appropriate values depending on the token.
+
+```zig
+pub const Scalar = union(enum) {
+    string: []const u8,
+    integer: i64,
+    decimal: f64,
+    boolean: bool,
+    none: void,
+}
+```
+
 ## TODO
  - [ ] Update PUML parser states diagram
- - [ ] Remove all allocations from the parser, return tokens instead
-   - [ ] Make the responsability of the caller to allocate memory as needed
+ - [x] Remove all allocations from the parser, return tokens instead
+   - [x] Make the responsability of the caller to allocate memory as needed
  - [ ] Implement Slashdash comments
  - [ ] Create utility to convert sequence of `Element` to string
  - [ ] Pass the official KDL test suite

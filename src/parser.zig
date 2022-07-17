@@ -8,26 +8,18 @@ const Location = @import("./tokens.zig").Location;
 
 pub const Element = union(enum) {
     pub const NodeBegin = struct {
-        name: []const u8,
-        type_name: ?[]const u8,
+        name: Token,
+        type_name: ?Token,
     };
 
     pub const Property = struct {
-        name: []const u8,
+        name: Token,
         value: Value,
     };
 
     pub const Value = struct {
-        type_name: ?[]const u8,
-        data: ValueData,
-    };
-
-    pub const ValueData = union(enum) {
-        string: []const u8,
-        integer: i64,
-        decimal: f64,
-        boolean: bool,
-        none: void,
+        type_name: ?Token,
+        data: Token,
     };
 
     node_begin: NodeBegin,
@@ -69,40 +61,40 @@ pub const Parser = struct {
         end: void,
 
         pub const NodeType = struct {
-            type_name: []const u8,
+            type_name: Token,
         };
 
         pub const NodeBegin = struct {
-            name: []const u8,
-            type_name: ?[]const u8,
+            name: Token,
+            type_name: ?Token,
         };
 
         pub const PropertyOrArgument = struct {
-            name: []const u8,
+            name: Token,
         };
 
         pub const PropertyName = struct {
-            name: []const u8,
+            name: Token,
         };
 
         pub const PropertyNameType = struct {
-            name: []const u8,
-            type_name: []const u8,
+            name: Token,
+            type_name: Token,
         };
 
         pub const Property = struct {
-            name: []const u8,
-            type_name: ?[]const u8,
-            value_data: Element.ValueData,
+            name: Token,
+            type_name: ?Token,
+            value_data: Token,
         };
 
         pub const Argument = struct {
-            type_name: ?[]const u8,
-            value_data: Element.ValueData,
+            type_name: ?Token,
+            value_data: Token,
         };
 
         pub const ArgumentType = struct {
-            type_name: []const u8,
+            type_name: Token,
         };
     };
 
@@ -111,8 +103,6 @@ pub const Parser = struct {
     pub fn StatePayload(comptime tag: StateTag) type {
         return std.meta.TagPayload(State, tag);
     }
-
-    allocator: Allocator,
 
     tokenizer: Tokenizer,
 
@@ -124,18 +114,13 @@ pub const Parser = struct {
 
     transitioned: bool = false,
 
-    pub fn init(allocator: Allocator, source: []const u8) !Parser {
+    pub fn init(source: []const u8) !Parser {
         return Parser{
-            .allocator = allocator,
             .tokenizer = try Tokenizer.init(source),
         };
     }
 
     fn transition(self: *Parser, comptime state: StateTag, payload: StatePayload(state)) !void {
-        std.debug.print("From {s} to {s}\n\n\n", .{
-            @tagName(self.state),
-            @tagName(state),
-        });
         var new_state = @unionInit(State, @tagName(state), payload);
 
         inline for (std.meta.fields(StateTag)) |field| {
@@ -223,7 +208,7 @@ pub const Parser = struct {
             self.next_element = Element{
                 .argument = .{
                     .type_name = null,
-                    .data = Element.ValueData{ .string = argument_value },
+                    .data = argument_value,
                 },
             };
         }
@@ -262,11 +247,8 @@ pub const Parser = struct {
                             token.kind == .raw_string or
                             token.kind == .escaped_string)
                         {
-                            const identifier = try token.toString(self.allocator);
-                            errdefer self.allocator.free(identifier);
-
                             try self.transition(.node_begin_identifier, .{
-                                .name = identifier,
+                                .name = token,
                                 .type_name = null,
                             });
                         }
@@ -280,11 +262,8 @@ pub const Parser = struct {
                             token.kind == .raw_string or
                             token.kind == .escaped_string)
                         {
-                            const identifier = try token.toString(self.allocator);
-                            errdefer self.allocator.free(identifier);
-
                             try self.transition(.node_begin_type_id, .{
-                                .type_name = identifier,
+                                .type_name = token,
                             });
                         }
                     },
@@ -300,11 +279,8 @@ pub const Parser = struct {
                             token.kind == .raw_string or
                             token.kind == .escaped_string)
                         {
-                            const identifier = try token.toString(self.allocator);
-                            errdefer self.allocator.free(identifier);
-
                             try self.transition(.node_begin_identifier, .{
-                                .name = identifier,
+                                .name = token,
                                 .type_name = state.type_name,
                             });
                         }
@@ -361,20 +337,14 @@ pub const Parser = struct {
                         if (token.kind == .escaped_string or
                             token.kind == .raw_string)
                         {
-                            const identifier = try token.toString(self.allocator);
-                            errdefer self.allocator.free(identifier);
-
                             try self.transition(.property_or_argument, .{
-                                .name = identifier,
+                                .name = token,
                             });
                         }
 
                         if (token.kind == .bare_identifier) {
-                            const identifier = try token.toString(self.allocator);
-                            errdefer self.allocator.free(identifier);
-
                             try self.transition(.property, .{
-                                .name = identifier,
+                                .name = token,
                             });
                         }
 
@@ -385,13 +355,9 @@ pub const Parser = struct {
                             token.kind == .binary or
                             token.kind == .keyword)
                         {
-                            // No need to free anything here, because all the tokens allowed here
-                            // are not allocated (not strings)
-                            const value_data = try valueTokenToValueData(self.allocator, token);
-
                             try self.transition(.argument, .{
                                 .type_name = null,
-                                .value_data = value_data,
+                                .value_data = token,
                             });
                         }
 
@@ -415,11 +381,8 @@ pub const Parser = struct {
                             token.kind == .escaped_string or
                             token.kind == .raw_string)
                         {
-                            const identifier = try token.toString(self.allocator);
-                            errdefer self.allocator.free(identifier);
-
                             try self.transition(.node_begin_identifier, .{
-                                .name = identifier,
+                                .name = token,
                                 .type_name = null,
                             });
                         }
@@ -448,11 +411,8 @@ pub const Parser = struct {
                             token.kind == .escaped_string or
                             token.kind == .raw_string)
                         {
-                            const identifier = try token.toString(self.allocator);
-                            errdefer self.allocator.free(identifier);
-
                             try self.transition(.node_begin_identifier, .{
-                                .name = identifier,
+                                .name = token,
                                 .type_name = null,
                             });
                         }
@@ -509,13 +469,10 @@ pub const Parser = struct {
                             token.kind == .binary or
                             token.kind == .keyword)
                         {
-                            const value_data = try valueTokenToValueData(self.allocator, token);
-                            errdefer if (value_data == .string) self.allocator.free(value_data.string);
-
                             try self.transition(.property_value_end, .{
                                 .name = state.name,
                                 .type_name = null,
-                                .value_data = value_data,
+                                .value_data = token,
                             });
                         }
                     },
@@ -524,12 +481,9 @@ pub const Parser = struct {
                             token.kind == .raw_string or
                             token.kind == .escaped_string)
                         {
-                            const identifier = try token.toString(self.allocator);
-                            errdefer self.allocator.free(identifier);
-
                             try self.transition(.property_value_type_id, .{
                                 .name = state.name,
-                                .type_name = identifier,
+                                .type_name = token,
                             });
                         }
                     },
@@ -551,13 +505,10 @@ pub const Parser = struct {
                             token.kind == .binary or
                             token.kind == .keyword)
                         {
-                            const value_data = try valueTokenToValueData(self.allocator, token);
-                            errdefer if (value_data == .string) self.allocator.free(value_data.string);
-
                             try self.transition(.property_value_end, .{
                                 .name = state.name,
                                 .type_name = state.type_name,
-                                .value_data = value_data,
+                                .value_data = token,
                             });
                         }
                     },
@@ -612,11 +563,8 @@ pub const Parser = struct {
                             token.kind == .raw_string or
                             token.kind == .escaped_string)
                         {
-                            const identifier = try token.toString(self.allocator);
-                            errdefer self.allocator.free(identifier);
-
                             try self.transition(.argument_type_id, .{
-                                .type_name = identifier,
+                                .type_name = token,
                             });
                         }
                     },
@@ -637,12 +585,9 @@ pub const Parser = struct {
                             token.kind == .binary or
                             token.kind == .keyword)
                         {
-                            const value_data = try valueTokenToValueData(self.allocator, token);
-                            errdefer if (value_data == .string) self.allocator.free(value_data.string);
-
                             try self.transition(.argument, .{
                                 .type_name = state.type_name,
-                                .value_data = value_data,
+                                .value_data = token,
                             });
                         }
                     },
@@ -676,83 +621,61 @@ pub const Parser = struct {
         return element;
     }
 
-    pub fn freeElement(self: *const Parser, element: Element) void {
-        switch (element) {
-            .node_begin => |payload| {
-                self.allocator.free(payload.name);
+    // pub fn freeElement(self: *const Parser, scalar: Element) void {
+    //     switch (element) {
+    //         .node_begin => |payload| {
+    //             self.allocator.free(payload.name);
 
-                if (payload.type_name) |type_name| {
-                    self.allocator.free(type_name);
-                }
-            },
-            .property => |payload| {
-                self.allocator.free(payload.name);
+    //             if (payload.type_name) |type_name| {
+    //                 self.allocator.free(type_name);
+    //             }
+    //         },
+    //         .property => |payload| {
+    //             self.allocator.free(payload.name);
 
-                self.freeValue(payload.value);
-            },
-            .argument => |payload| {
-                self.freeValue(payload);
-            },
-            else => {},
-        }
-    }
+    //             self.freeValue(payload.value);
+    //         },
+    //         .argument => |payload| {
+    //             self.freeValue(payload);
+    //         },
+    //         else => {},
+    //     }
+    // }
 
-    pub fn freeValue(self: *const Parser, value: Element.Value) void {
-        if (value.type_name) |type_name| {
-            self.allocator.free(type_name);
-        }
+    // pub fn freeValue(self: *const Parser, value: Element.Value) void {
+    //     if (value.type_name) |type_name| {
+    //         self.allocator.free(type_name);
+    //     }
 
-        if (value.data == .string) {
-            self.allocator.free(value.data.string);
-        }
-    }
+    //     if (value.data == .string) {
+    //         self.allocator.free(value.data.string);
+    //     }
+    // }
 };
 
-fn valueTokenToValueData(allocator: Allocator, token: Token) !Element.ValueData {
-    _ = allocator;
-    _ = token;
-
-    if (token.kind == .raw_string or token.kind == .escaped_string) {
-        return Element.ValueData{ .string = try token.toString(allocator) };
-    } else if (token.kind == .decimal) {
-        return Element.ValueData{ .decimal = try token.toDecimal() };
-    } else if (token.kind == .signed_integer or
-        token.kind == .hex or
-        token.kind == .octal or
-        token.kind == .binary)
-    {
-        return Element.ValueData{ .integer = try token.toInteger() };
-    } else if (token.kind == .keyword) {
-        if (std.mem.eql(u8, token.text, "true")) {
-            return Element.ValueData{ .boolean = true };
-        } else if (std.mem.eql(u8, token.text, "false")) {
-            return Element.ValueData{ .boolean = false };
-        } else if (std.mem.eql(u8, token.text, "null")) {
-            return Element.ValueData{ .none = {} };
-        } else {
-            unreachable;
-        }
-    } else {
-        unreachable;
-    }
-}
-
-fn expectNodeBegin(parser: *Parser, name: []const u8, type_name: ?[]const u8) !void {
+fn expectNodeBegin(parser: *Parser, allocator: Allocator, name: []const u8, type_name: ?[]const u8) !void {
     var element = try parser.next();
 
     // Make sure the element is not null
     try std.testing.expect(element != null);
 
-    defer parser.freeElement(element.?);
-
     try std.testing.expect(element.? == .node_begin);
-    try std.testing.expectEqualStrings(name, element.?.node_begin.name);
+
+    // Get the name string
+    const actual_name = try element.?.node_begin.name.toString(allocator);
+    defer allocator.free(actual_name);
+
+    try std.testing.expectEqualStrings(name, actual_name);
 
     if (type_name == null) {
         try std.testing.expect(element.?.node_begin.type_name == null);
     } else {
         try std.testing.expect(element.?.node_begin.type_name != null);
-        try std.testing.expectEqualStrings(type_name.?, element.?.node_begin.type_name.?);
+
+        const actual_type_name = try element.?.node_begin.type_name.?.toString(allocator);
+        defer allocator.free(actual_type_name);
+
+        try std.testing.expectEqualStrings(type_name.?, actual_type_name);
     }
 }
 
@@ -762,63 +685,71 @@ fn expectNodeEnd(parser: *Parser) !void {
     // Make sure the element is not null
     try std.testing.expect(element != null);
 
-    defer parser.freeElement(element.?);
-
     try std.testing.expect(element.? == .node_end);
 }
 
-fn expectProperty(parser: *Parser, name: []const u8, value: anytype, type_name: ?[]const u8) !void {
+fn expectProperty(parser: *Parser, allocator: Allocator, name: []const u8, value: anytype, type_name: ?[]const u8) !void {
     var element = try parser.next();
 
     // Make sure the element is not null
     try std.testing.expect(element != null);
 
-    defer parser.freeElement(element.?);
-
     try std.testing.expect(element.? == .property);
-    try std.testing.expectEqualStrings(name, element.?.property.name);
 
-    try expectValueData(element.?.property.value.data, value);
+    // Get the name string
+    const actual_name = try element.?.property.name.toString(allocator);
+    defer allocator.free(actual_name);
+
+    try std.testing.expectEqualStrings(name, actual_name);
+
+    try expectValueData(allocator, element.?.property.value.data, value);
 
     if (type_name == null) {
         try std.testing.expect(element.?.property.value.type_name == null);
     } else {
         try std.testing.expect(element.?.property.value.type_name != null);
-        try std.testing.expectEqualStrings(type_name.?, element.?.property.value.type_name.?);
+
+        const actual_type_name = try element.?.property.value.type_name.?.toString(allocator);
+        defer allocator.free(actual_type_name);
+
+        try std.testing.expectEqualStrings(type_name.?, actual_type_name);
     }
 }
 
-fn expectArgument(parser: *Parser, value: anytype, type_name: ?[]const u8) !void {
+fn expectArgument(parser: *Parser, allocator: Allocator, value: anytype, type_name: ?[]const u8) !void {
     var element = try parser.next();
 
     // Make sure the element is not null
     try std.testing.expect(element != null);
 
-    defer parser.freeElement(element.?);
-
     try std.testing.expect(element.? == .argument);
 
-    try expectValueData(element.?.argument.data, value);
+    try expectValueData(allocator, element.?.argument.data, value);
 
     if (type_name == null) {
         try std.testing.expect(element.?.argument.type_name == null);
     } else {
         try std.testing.expect(element.?.argument.type_name != null);
-        try std.testing.expectEqualStrings(type_name.?, element.?.argument.type_name.?);
+
+        const actual_type_name = try element.?.argument.type_name.?.toString(allocator);
+        defer allocator.free(actual_type_name);
+
+        try std.testing.expectEqualStrings(type_name.?, actual_type_name);
     }
 }
 
 fn expectNull(parser: *Parser) !void {
     var element = try parser.next();
-    // We can use element.? because errdefer will only be triggered if the assert == null fails
-    errdefer parser.freeElement(element.?);
 
     // Make sure the element is null
     try std.testing.expect(element == null);
 }
 
-fn expectValueData(value: Element.ValueData, expected: anytype) !void {
+fn expectValueData(allocator: Allocator, value_token: Token, expected: anytype) !void {
     const type_info = @typeInfo(@TypeOf(expected));
+
+    var value = try value_token.toScalar(allocator);
+    defer value.deinit(allocator);
 
     if (type_info == .Int or type_info == .ComptimeInt) {
         try std.testing.expect(value == .integer);
@@ -841,37 +772,41 @@ fn expectValueData(value: Element.ValueData, expected: anytype) !void {
 }
 
 test "Basic node_begin/node_end parser test" {
-    var parser = try Parser.init(std.testing.allocator, "");
+    var allocator = std.testing.allocator;
+
+    var parser = try Parser.init("");
     try std.testing.expect((try parser.next()) == null);
 
-    parser = try Parser.init(std.testing.allocator, "node { node1; node2 }");
-    try expectNodeBegin(&parser, "node", null);
-    try expectNodeBegin(&parser, "node1", null);
+    parser = try Parser.init("node { node1; node2 }");
+    try expectNodeBegin(&parser, allocator, "node", null);
+    try expectNodeBegin(&parser, allocator, "node1", null);
     try expectNodeEnd(&parser);
-    try expectNodeBegin(&parser, "node2", null);
+    try expectNodeBegin(&parser, allocator, "node2", null);
     try expectNodeEnd(&parser);
     try expectNodeEnd(&parser);
     try expectNull(&parser);
 }
 
 test "Basic arguments/properties parser test" {
-    var parser = try Parser.init(std.testing.allocator, "");
+    var allocator = std.testing.allocator;
+
+    var parser = try Parser.init("");
     try std.testing.expect((try parser.next()) == null);
 
-    parser = try Parser.init(std.testing.allocator,
+    parser = try Parser.init(
         \\ node "foo" { 
         \\      node1 prop=1 prop=2.1; node2 true null
         \\ }
     );
-    try expectNodeBegin(&parser, "node", null);
-    try expectArgument(&parser, "foo", null);
-    try expectNodeBegin(&parser, "node1", null);
-    try expectProperty(&parser, "prop", 1, null);
-    try expectProperty(&parser, "prop", 2.1, null);
+    try expectNodeBegin(&parser, allocator, "node", null);
+    try expectArgument(&parser, allocator, "foo", null);
+    try expectNodeBegin(&parser, allocator, "node1", null);
+    try expectProperty(&parser, allocator, "prop", 1, null);
+    try expectProperty(&parser, allocator, "prop", 2.1, null);
     try expectNodeEnd(&parser);
-    try expectNodeBegin(&parser, "node2", null);
-    try expectArgument(&parser, true, null);
-    try expectArgument(&parser, {}, null);
+    try expectNodeBegin(&parser, allocator, "node2", null);
+    try expectArgument(&parser, allocator, true, null);
+    try expectArgument(&parser, allocator, {}, null);
     try expectNodeEnd(&parser);
     try expectNodeEnd(&parser);
     try expectNull(&parser);
