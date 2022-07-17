@@ -1,0 +1,165 @@
+@startuml
+hide empty description
+
+!theme reddress-darkblue
+
+!procedure $emit($ev)
+  <b><font color=$ACCENT>$ev
+!endprocedure
+
+!procedure $emitNote($ev)
+    note on link 
+        $ev
+    end note
+!endprocedure
+
+state Main {
+    state start <<start>>
+    state end <<end>>
+
+    state nodes
+}
+
+state Node {
+    state node_begin_type
+    state node_begin_type_id
+    state node_begin_type_end
+    state node_begin_identifier
+    state node_begin_identifier_space
+    state property_or_argument
+    state node_children
+    state node_end
+
+    Main -[hidden]down-> Node
+    Node -[hidden]left-> Property
+    Node -[hidden]right-> Argument
+}
+
+state Argument {
+    state argument
+    state argument_type
+    state argument_type_id
+    state argument_type_end
+}
+
+state Property {
+    state property
+    state property_value
+    state property_value_type
+    state property_value_type_id
+    state property_value_type_end
+    state property_value_end
+}
+
+' Start
+start -> nodes
+
+' Note
+note on link
+identifier := bare_identifier | raw_string | escaped_string
+linespace := newline | ws | single_line_comment
+node_space := ws | escline
+node_terminator := single-line-comment | newline | semicolon | eof
+value := raw_string | escaped_string | number | keyword
+"(" := braces_open
+")" := braces_close
+";" := semicolon"
+end note
+
+' Node End
+nodes -> nodes : linespace
+nodes -down-> node_end : "}"
+nodes -down-> node_begin_type : "("
+nodes --> node_begin_identifier : identifier
+nodes -up-> end : eof
+
+' Node Begin
+node_begin_type -down-> node_begin_type_id : identifier
+node_begin_type_id -down-> node_begin_type_end : ")"
+node_begin_type_end -up-> node_begin_identifier : identifier
+node_begin_type_id : type_name : []const u8
+node_begin_type_end : type_name : []const u8
+
+' Node Begin Identifier
+node_begin_identifier -right-> node_end : node_terminator
+node_begin_identifier -down--> node_begin_identifier_space : node_space
+node_begin_identifier -down-> node_children : "{"
+node_begin_identifier : name : []const u8
+node_begin_identifier : type_name : ?[]const u8
+node_begin_identifier : $emit("Element { .node_begin }")
+
+' Node Begin Identifier Space
+node_begin_identifier_space -up-> node_end : node_terminator
+node_begin_identifier_space -> node_begin_identifier_space : node_space
+node_begin_identifier_space -down-> node_children : "{"
+node_begin_identifier_space ----> property_or_argument : escaped_string | raw_string
+node_begin_identifier_space -left-> property : bare_identifier
+node_begin_identifier_space -down-> argument : number | keyword
+node_begin_identifier_space --> argument_type : "("
+
+' Node Chidlren
+node_children -> node_children : linespace
+node_children -up-> node_begin_type : "("
+node_children --> node_begin_identifier : identifier
+
+node_end -up-> nodes : linespace
+node_end -> node_end : "}"
+node_end -> node_begin_type : "("
+node_end -> node_begin_identifier : identifier
+node_end : $emit("Element { .node_end }")
+
+property_or_argument -up-> node_end : node_terminator
+$emitNote("Element { .argument }s")
+property_or_argument -up-> node_begin_identifier_space : node_space
+$emitNote("Element { .argument }")
+property_or_argument -right-> node_children : "{"
+$emitNote("Element { .argument }")
+property_or_argument -left-> property_value : "="
+property_or_argument : name : []const u8
+
+' Property
+property --> property_value : "="
+property : name : []const u8
+
+' Property Value
+property_value --> property_value_type : "("
+property_value -left-> property_value_end : value
+property_value : name : []const u8
+
+' Property Value Type
+property_value_type -down-> property_value_type_id : identifier
+property_value_type_id -right-> property_value_type_end : ")"
+property_value_type_end -left-> property_value_end : value
+property_value_type : name : []const u8
+property_value_type_id : name : []const u8
+property_value_type_id : type_name : []const u8
+property_value_type_end : name : []const u8
+property_value_type_end : type_name : []const u8
+
+' Property Value End
+property_value_end -up-> node_end : node_terminator
+property_value_end -right-> node_begin_identifier_space : node_space
+property_value_end -down---> node_children : "{"
+property_value_end : name : []const u8
+property_value_end : type_name : ?[]const u8
+property_value_end : value_data : ValueData
+property_value_end : $emit("Element { .property }")
+
+' Argument
+argument -left-> node_end : node_terminator
+argument -left-> node_begin_identifier_space : node_space
+argument -down---> node_children : "{"
+argument : value_data : ValueData
+argument : type_name : ?[]const u8
+argument : $emit("Element { .argument }")
+
+' Argument Type
+argument_type --> argument_type_id : identifier
+argument_type_id -> argument_type_end : ")"
+argument_type_end -up-> argument : value
+argument_type_id : type_name : []const u8
+argument_type_end : type_name : []const u8
+
+@enduml
+
+
