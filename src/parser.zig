@@ -42,7 +42,7 @@ pub const Parser = struct {
         node_begin_identifier: NodeBegin,
         node_begin_identifier_space: void,
         node_children: void,
-        node_end: void,
+        node_end: NodeEnd,
 
         property_or_argument: PropertyOrArgument,
 
@@ -67,6 +67,10 @@ pub const Parser = struct {
         pub const NodeBegin = struct {
             name: Token,
             type_name: ?Token,
+        };
+
+        pub const NodeEnd = struct {
+            braces: bool,
         };
 
         pub const PropertyOrArgument = struct {
@@ -111,6 +115,8 @@ pub const Parser = struct {
     state: State = .start,
 
     depth: usize = 0,
+
+    double_end: bool = false,
 
     transitioned: bool = false,
 
@@ -161,6 +167,8 @@ pub const Parser = struct {
     pub fn enter_node_begin_identifier(self: *Parser, new_state: StatePayload(.node_begin_identifier)) !void {
         assert(self.next_element == null);
 
+        self.double_end = true;
+
         self.depth += 1;
 
         self.next_element = Element{
@@ -169,6 +177,12 @@ pub const Parser = struct {
                 .type_name = new_state.type_name,
             },
         };
+    }
+
+    pub fn enter_node_children(self: *Parser, new_state: StatePayload(.node_children)) !void {
+        _ = new_state;
+
+        self.double_end = false;
     }
 
     pub fn enter_property_value_end(self: *Parser, new_state: StatePayload(.property_value_end)) !void {
@@ -219,6 +233,18 @@ pub const Parser = struct {
 
         var element: ?Element = null;
 
+        if (self.state == .node_end and
+            self.double_end and
+            self.state.node_end.braces and
+            self.depth > 0)
+        {
+            self.double_end = false;
+
+            self.depth -= 1;
+
+            return Element{ .node_end = {} };
+        }
+
         loop: while (self.state != .end) {
             self.transitioned = false;
 
@@ -234,7 +260,9 @@ pub const Parser = struct {
                         }
 
                         if (token.kind == .curly_brace_close) {
-                            try self.transition(.node_end, {});
+                            try self.transition(.node_end, .{
+                                .braces = true,
+                            });
                         }
 
                         // TODO Handle slash-dash
@@ -292,7 +320,9 @@ pub const Parser = struct {
                             token.kind == .semicolon or
                             token.kind == .curly_brace_close)
                         {
-                            try self.transition(.node_end, {});
+                            try self.transition(.node_end, .{
+                                .braces = token.kind == .curly_brace_close,
+                            });
                         }
 
                         // End of file should go to the .end state always
@@ -317,7 +347,9 @@ pub const Parser = struct {
                             token.kind == .semicolon or
                             token.kind == .curly_brace_close)
                         {
-                            try self.transition(.node_end, {});
+                            try self.transition(.node_end, .{
+                                .braces = token.kind == .curly_brace_close,
+                            });
                         }
 
                         if (token.kind == .eof) {
@@ -400,7 +432,9 @@ pub const Parser = struct {
                         }
 
                         if (token.kind == .curly_brace_close) {
-                            try self.transition(.node_end, {});
+                            try self.transition(.node_end, .{
+                                .braces = true,
+                            });
                         }
 
                         if (token.kind == .brace_open) {
@@ -423,7 +457,9 @@ pub const Parser = struct {
                             token.kind == .semicolon or
                             token.kind == .curly_brace_close)
                         {
-                            try self.transition(.node_end, {});
+                            try self.transition(.node_end, .{
+                                .braces = token.kind == .curly_brace_close,
+                            });
                         }
 
                         if (token.kind == .eof) {
@@ -518,7 +554,9 @@ pub const Parser = struct {
                             token.kind == .semicolon or
                             token.kind == .curly_brace_close)
                         {
-                            try self.transition(.node_end, {});
+                            try self.transition(.node_end, .{
+                                .braces = token.kind == .curly_brace_close,
+                            });
                         }
 
                         if (token.kind == .eof) {
@@ -541,7 +579,9 @@ pub const Parser = struct {
                             token.kind == .semicolon or
                             token.kind == .curly_brace_close)
                         {
-                            try self.transition(.node_end, {});
+                            try self.transition(.node_end, .{
+                                .braces = token.kind == .curly_brace_close,
+                            });
                         }
 
                         if (token.kind == .eof) {
@@ -613,9 +653,7 @@ pub const Parser = struct {
         if (self.state == .end and element == null and self.depth > 0) {
             self.depth -= 1;
 
-            element = Element{
-                .node_end = {},
-            };
+            element = Element{ .node_end = {} };
         }
 
         return element;
@@ -812,8 +850,37 @@ test "Basic arguments/properties parser test" {
     try expectNull(&parser);
 }
 
-// NOTE PUML:
-//  TODO Create states for the nodes
-//  TODO Separate .eof from node_terminator, transition them directly to .end
-//  TODO Add .curly_brace_close to the node_terminators
-//  TODO Add .eof transition to .end to .nodes_end state
+test "Terminate curly braces same line" {
+    var allocator = std.testing.allocator;
+
+    var parser = try Parser.init("");
+    try std.testing.expect((try parser.next()) == null);
+
+    parser = try Parser.init(
+        \\ node "foo" { node1 prop=1 prop=2.1; node2 true null }
+        \\ node "foo" { node1 prop=1 prop=2.1; node2 true null }
+    );
+    try expectNodeBegin(&parser, allocator, "node", null);
+    try expectArgument(&parser, allocator, "foo", null);
+    try expectNodeBegin(&parser, allocator, "node1", null);
+    try expectProperty(&parser, allocator, "prop", 1, null);
+    try expectProperty(&parser, allocator, "prop", 2.1, null);
+    try expectNodeEnd(&parser);
+    try expectNodeBegin(&parser, allocator, "node2", null);
+    try expectArgument(&parser, allocator, true, null);
+    try expectArgument(&parser, allocator, {}, null);
+    try expectNodeEnd(&parser);
+    try expectNodeEnd(&parser);
+    try expectNodeBegin(&parser, allocator, "node", null);
+    try expectArgument(&parser, allocator, "foo", null);
+    try expectNodeBegin(&parser, allocator, "node1", null);
+    try expectProperty(&parser, allocator, "prop", 1, null);
+    try expectProperty(&parser, allocator, "prop", 2.1, null);
+    try expectNodeEnd(&parser);
+    try expectNodeBegin(&parser, allocator, "node2", null);
+    try expectArgument(&parser, allocator, true, null);
+    try expectArgument(&parser, allocator, {}, null);
+    try expectNodeEnd(&parser);
+    try expectNodeEnd(&parser);
+    try expectNull(&parser);
+}

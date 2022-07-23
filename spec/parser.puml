@@ -59,7 +59,7 @@ note on link
 identifier := bare_identifier | raw_string | escaped_string
 linespace := newline | ws | single_line_comment
 node_space := ws | escline
-node_terminator := single-line-comment | newline | semicolon | eof
+node_terminator := single-line-comment | newline | semicolon | "}"
 value := raw_string | escaped_string | number | keyword
 "(" := braces_open
 ")" := braces_close
@@ -71,7 +71,7 @@ nodes -> nodes : linespace
 nodes -down-> node_end : "}"
 nodes -down-> node_begin_type : "("
 nodes --> node_begin_identifier : identifier
-nodes -up-> end : eof
+nodes -right-> end : eof
 
 ' Node Begin
 node_begin_type -down-> node_begin_type_id : identifier
@@ -82,6 +82,7 @@ node_begin_type_end : type_name : []const u8
 
 ' Node Begin Identifier
 node_begin_identifier -right-> node_end : node_terminator
+node_begin_identifier -up-> end : eof
 node_begin_identifier -down--> node_begin_identifier_space : node_space
 node_begin_identifier -down-> node_children : "{"
 node_begin_identifier : name : []const u8
@@ -90,6 +91,7 @@ node_begin_identifier : $emit("Element { .node_begin }")
 
 ' Node Begin Identifier Space
 node_begin_identifier_space -up-> node_end : node_terminator
+node_begin_identifier_space -up-> end : eof
 node_begin_identifier_space -> node_begin_identifier_space : node_space
 node_begin_identifier_space -down-> node_children : "{"
 node_begin_identifier_space ----> property_or_argument : escaped_string | raw_string
@@ -104,11 +106,14 @@ node_children --> node_begin_identifier : identifier
 
 node_end -up-> nodes : linespace
 node_end -> node_end : "}"
+node_end -up-> end : eof
 node_end -> node_begin_type : "("
 node_end -> node_begin_identifier : identifier
 node_end : $emit("Element { .node_end }")
 
 property_or_argument -up-> node_end : node_terminator
+$emitNote("Element { .argument }s")
+property_or_argument -up-> end : eof
 $emitNote("Element { .argument }s")
 property_or_argument -up-> node_begin_identifier_space : node_space
 $emitNote("Element { .argument }")
@@ -138,6 +143,7 @@ property_value_type_end : type_name : []const u8
 
 ' Property Value End
 property_value_end -up-> node_end : node_terminator
+property_value_end -up-> end : eof
 property_value_end -right-> node_begin_identifier_space : node_space
 property_value_end -down---> node_children : "{"
 property_value_end : name : []const u8
@@ -147,6 +153,7 @@ property_value_end : $emit("Element { .property }")
 
 ' Argument
 argument -left-> node_end : node_terminator
+argument -up-> end : eof
 argument -left-> node_begin_identifier_space : node_space
 argument -down---> node_children : "{"
 argument : value_data : ValueData

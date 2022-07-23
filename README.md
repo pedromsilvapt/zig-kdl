@@ -92,7 +92,7 @@ pub const Scalar = union(enum) {
 ```
 
 ## TODO
- - [ ] Update PUML parser states diagram
+ - [x] Update PUML parser states diagram
  - [x] Remove all allocations from the parser, return tokens instead
    - [x] Make the responsability of the caller to allocate memory as needed
  - [ ] Implement Slashdash comments
