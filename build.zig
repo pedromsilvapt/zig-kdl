@@ -6,6 +6,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    _ = b.addModule("kdl", .{
+        .source_file = .{ .path = "src/main.zig" },
+        .dependencies = &[_]std.Build.ModuleDependency{},
+    });
+
     const lib = b.addStaticLibrary(.{
         .name = "zig-kdl",
         .root_source_file = .{ .path = "./src/main.zig" },
