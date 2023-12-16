@@ -11,15 +11,6 @@ pub fn build(b: *std.Build) void {
         .dependencies = &[_]std.Build.ModuleDependency{},
     });
 
-    const lib = b.addStaticLibrary(.{
-        .name = "zig-kdl",
-        .root_source_file = .{ .path = "./src/main.zig" },
-        .target = target,
-        .optimize = optimize,
-    });
-
-    _ = b.addInstallArtifact(lib, .{});
-
     const main_tests = b.addTest(.{
         .name = "zig-kdl-tests",
         .root_source_file = .{ .path = "./src/main.zig" },
