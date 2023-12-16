@@ -141,8 +141,6 @@ pub const DigitMatcher = struct {
     system: NumericSystem,
 
     pub fn match(self: *const DigitMatcher, reader: *Reader) bool {
-        _ = self;
-
         var result = false;
 
         if (reader.next()) |char| {
@@ -250,7 +248,7 @@ pub fn OneOfMatcher(comptime AlternativeMatchers: type) type {
 
         pub fn match(self: *const @This(), reader: *Reader) bool {
             inline for (std.meta.fields(AlternativeMatchers)) |field| {
-                var child_matcher = &@field(self.alternative_matchers, field.name);
+                var child_matcher = @field(self.alternative_matchers, field.name);
 
                 var child_reader = reader.*;
 
@@ -331,7 +329,7 @@ pub fn SequenceMatcher(comptime SegmentMatchers: type) type {
 
         pub fn match(self: *const @This(), reader: *Reader) bool {
             inline for (std.meta.fields(SegmentMatchers)) |field| {
-                var child_matcher = &@field(self.segment_matchers, field.name);
+                var child_matcher = @field(self.segment_matchers, field.name);
 
                 if (!child_matcher.match(reader)) {
                     return false;
@@ -406,7 +404,7 @@ pub fn ExceptMatcher(
             // If the mode is start
             if (self.mode == .start or self.mode == .full) {
                 inline for (std.meta.fields(ExcludedMatchers)) |field| {
-                    var child_matcher = &@field(self.excluded_matchers, field.name);
+                    var child_matcher = @field(self.excluded_matchers, field.name);
 
                     var child_reader = initial_reader;
 
@@ -424,7 +422,7 @@ pub fn ExceptMatcher(
                 }
             } else if (self.mode == .anywhere or self.mode == .end) {
                 inline for (std.meta.fields(ExcludedMatchers)) |field| {
-                    var child_matcher = &@field(self.excluded_matchers, field.name);
+                    var child_matcher = @field(self.excluded_matchers, field.name);
 
                     var chars_to_skip: usize = 0;
 

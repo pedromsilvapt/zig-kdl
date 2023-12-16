@@ -79,7 +79,7 @@ pub const Element = union(enum) {
 };
 ```
 
-The caller can convert tokens into values using the functions `token.toString(allocator)`, `token.toInteger()` and `token.toDecimal()`, if they know the type of the token is one of those. Or they can use the more generic `token.toScala(allocator)`, which returns a union with the appropriate values depending on the token.
+The caller can convert tokens into values using the functions `token.toString(allocator)`, `token.toInteger()` and `token.toDecimal()`, if they know the type of the token is one of those. Or they can use the more generic `token.toScalar(allocator)`, which returns a union with the appropriate values depending on the token.
 
 ```zig
 pub const Scalar = union(enum) {

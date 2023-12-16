@@ -99,7 +99,7 @@ pub const Reader = struct {
 
 pub const utf8 = struct {
     pub fn fromASCII(char: u8) CodePoint {
-        return @intCast(CodePoint, char);
+        return @as(CodePoint, @intCast(char));
     }
 
     pub fn isWhiteSpace(char: CodePoint) bool {

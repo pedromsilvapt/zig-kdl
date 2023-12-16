@@ -4,7 +4,6 @@ const Allocator = std.mem.Allocator;
 const Token = @import("./tokens.zig").Token;
 const TokenKind = @import("./tokens.zig").TokenKind;
 const Tokenizer = @import("./tokens.zig").Tokenizer;
-const Location = @import("./tokens.zig").Location;
 
 pub const Element = union(enum) {
     pub const NodeBegin = struct {
@@ -28,7 +27,7 @@ pub const Element = union(enum) {
     argument: Value,
 };
 
-/// TODO Sync any changes made to this parser, to the FSM diagram stored in 
+/// TODO Sync any changes made to this parser, to the FSM diagram stored in
 /// the file spec/parser.puml
 pub const Parser = struct {
     pub const State = union(enum) {
@@ -133,14 +132,14 @@ pub const Parser = struct {
             if (self.state == @field(StateTag, field.name)) {
                 const leave_method_name = "leave_" ++ field.name;
                 if (@hasDecl(Parser, leave_method_name)) {
-                    try @call(.{}, @field(Parser, leave_method_name), .{ self, new_state });
+                    try @call(.auto, @field(Parser, leave_method_name), .{ self, new_state });
                 }
             }
         }
 
         const enter_method_name = "enter_" ++ @tagName(state);
         if (@hasDecl(Parser, enter_method_name)) {
-            try @call(.{}, @field(Parser, enter_method_name), .{ self, payload });
+            try @call(.auto, @field(Parser, enter_method_name), .{ self, payload });
         }
 
         self.transitioned = true;
@@ -791,10 +790,10 @@ fn expectValueData(allocator: Allocator, value_token: Token, expected: anytype) 
 
     if (type_info == .Int or type_info == .ComptimeInt) {
         try std.testing.expect(value == .integer);
-        try std.testing.expectEqual(@intCast(i64, expected), value.integer);
+        try std.testing.expectEqual(@as(i64, @intCast(expected)), value.integer);
     } else if (type_info == .Float or type_info == .ComptimeFloat) {
         try std.testing.expect(value == .decimal);
-        try std.testing.expectEqual(@floatCast(f64, expected), value.decimal);
+        try std.testing.expectEqual(@as(f64, @floatCast(expected)), value.decimal);
     } else if (type_info == .Bool) {
         try std.testing.expect(value == .boolean);
         try std.testing.expectEqual(expected, value.boolean);
@@ -832,7 +831,7 @@ test "Basic arguments/properties parser test" {
     try std.testing.expect((try parser.next()) == null);
 
     parser = try Parser.init(
-        \\ node "foo" { 
+        \\ node "foo" {
         \\      node1 prop=1 prop=2.1; node2 true null
         \\ }
     );
