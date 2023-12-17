@@ -39,8 +39,8 @@ pub const TokenKind = union(enum) {
 pub const Token = struct {
     kind: TokenKind,
     text: []const u8,
-    location_start: Location,
-    location_end: Location,
+    location_start: Location = .{},
+    location_end: Location = .{},
 
     const escaped_codes = "\\/bfnrt";
     const escaped_replacements = "\\/\x08\x0C\n\r\t";
@@ -197,6 +197,45 @@ pub const Token = struct {
             }
         } else {
             return error.InvalidScalarToken;
+        }
+    }
+
+    pub fn deinitFromScalar(self: *const Token, allocator: Allocator) void {
+        if (self.kind == .escaped_string or self.kind == .raw_string or self.kind == .signed_integer or self.kind == .decimal) {
+            allocator.free(self.text);
+        }
+    }
+
+    pub fn fromScalar(allocator: Allocator, scalar: Scalar) !Token {
+        switch (scalar) {
+            .string => |str| {
+                // TODO Implement escaping, unicode characters, etc...
+                // Wrap the string in double quotes
+                const str_str = try std.fmt.allocPrint(allocator, "\"{s}\"", .{str});
+                errdefer allocator.free(str_str);
+
+                return Token { .kind = .escaped_string, .text = str_str };
+            },
+            .integer => |int| {
+                // Convert the integer to string
+                const int_str = try std.fmt.allocPrint(allocator, "{d}", .{int});
+                errdefer allocator.free(int_str);
+
+                return Token { .kind = .signed_integer, .text = int_str };
+            },
+            .decimal => |dec| {
+                // Convert the decimal to string
+                const dec_str = try std.fmt.allocPrint(allocator, "{d}", .{dec});
+                errdefer allocator.free(dec_str);
+
+                return Token { .kind = .decimal, .text = dec_str };
+            },
+            .boolean => |bit| {
+                return Token { .kind = .keyword, .text = if (bit) "true" else "false" };
+            },
+            .none => {
+                return Token { .kind = .keyword, .text = "none" };
+            }
         }
     }
 
