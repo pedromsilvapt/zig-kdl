@@ -95,6 +95,6 @@ pub const Scalar = union(enum) {
  - [x] Update PUML parser states diagram
  - [x] Remove all allocations from the parser, return tokens instead
    - [x] Make the responsability of the caller to allocate memory as needed
- - [ ] Implement Slashdash comments
- - [ ] Create utility to convert sequence of `Element` to string
+ - [x] Implement Slashdash comments
+ - [x] Create utility to convert sequence of `Element` to string
  - [ ] Pass the official KDL test suite
