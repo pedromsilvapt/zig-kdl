@@ -27,6 +27,7 @@ pub const TokenKind = union(enum) {
     curly_brace_open,
     curly_brace_close,
     equals,
+    slashdash,
     // White spaces
     newline,
     ws,
@@ -42,8 +43,8 @@ pub const Token = struct {
     location_start: Location = .{},
     location_end: Location = .{},
 
-    const escaped_codes = "\\/bfnrt";
-    const escaped_replacements = "\\/\x08\x0C\n\r\t";
+    const escaped_codes = "\"\\bfnrt";
+    const escaped_replacements = "\"\\\x08\x0C\n\r\t";
 
     pub fn toString(self: *const Token, allocator: Allocator) ![]u8 {
         assert(self.kind == .bare_identifier or self.kind == .raw_string or self.kind == .escaped_string);
@@ -136,6 +137,17 @@ pub const Token = struct {
                             // Advance the cursors
                             i = j;
                             last_chunk_start = j + 1;
+                        } else {
+                            // If there is no special transformation to be done to the character after the backslash,
+                            // then simply append the character without the backslash
+                            // Replace the string representations os "\n", "\t", etc...
+                            // by their actual values
+                            try buffer.append(self.text[i + 1]);
+
+                            // In this case, we must increment the character by one more
+                            i += 1;
+
+                            last_chunk_start = i + 1;
                         }
                     }
                 } else if (i == self.text.len - 2) {
@@ -167,8 +179,11 @@ pub const Token = struct {
             self.kind == .octal or
             self.kind == .binary)
         {
+            // Trim any underscores from the beginning and end of the number, since Zig does not support them
+            const text = std.mem.trim(u8, self.text, "_");
+
             // Radix 0 means the radix is auto-detected based on the prefix 0x, 0o, or 0b
-            return try std.fmt.parseInt(i64, self.text, 0);
+            return try std.fmt.parseInt(i64, text, 0);
         } else {
             unreachable;
         }
@@ -201,42 +216,157 @@ pub const Token = struct {
     }
 
     pub fn deinitFromScalar(self: *const Token, allocator: Allocator) void {
-        if (self.kind == .escaped_string or self.kind == .raw_string or self.kind == .signed_integer or self.kind == .decimal) {
+        if (self.kind == .escaped_string or
+            self.kind == .raw_string or
+            self.kind == .signed_integer or
+            self.kind == .decimal or
+            self.kind == .bare_identifier)
+        {
             allocator.free(self.text);
         }
     }
 
-    pub fn fromScalar(allocator: Allocator, scalar: Scalar) !Token {
-        switch (scalar) {
-            .string => |str| {
-                // TODO Implement escaping, unicode characters, etc...
-                // Wrap the string in double quotes
-                const str_str = try std.fmt.allocPrint(allocator, "\"{s}\"", .{str});
-                errdefer allocator.free(str_str);
+    pub fn fromIdentifier(allocator: Allocator, str: []const u8) !Token {
+        var needs_quotes = false;
 
-                return Token { .kind = .escaped_string, .text = str_str };
-            },
-            .integer => |int| {
-                // Convert the integer to string
-                const int_str = try std.fmt.allocPrint(allocator, "{d}", .{int});
-                errdefer allocator.free(int_str);
+        // Handle the edge case where all emtpy identifiers need to always be enclosed in quotes
+        if (str.len == 0) {
+            needs_quotes = true;
+        }
 
-                return Token { .kind = .signed_integer, .text = int_str };
-            },
-            .decimal => |dec| {
-                // Convert the decimal to string
-                const dec_str = try std.fmt.allocPrint(allocator, "{d}", .{dec});
-                errdefer allocator.free(dec_str);
+        // If the first character is a digit, then it needs quotes
+        if (str.len >= 1 and std.ascii.isDigit(str[0])) {
+            needs_quotes = true;
+        }
 
-                return Token { .kind = .decimal, .text = dec_str };
-            },
-            .boolean => |bit| {
-                return Token { .kind = .keyword, .text = if (bit) "true" else "false" };
-            },
-            .none => {
-                return Token { .kind = .keyword, .text = "none" };
+        // If the first character is a minus sign, and the second character is a digit,
+        // then the identifier needs quotes to avoid it being confused with a number
+        if (str.len >= 2 and str[0] == '-' and std.ascii.isDigit(str[1])) {
+            needs_quotes = true;
+        }
+
+        // If the identifier is not a valid utf8 string, then always enclose in quotes
+        if (!needs_quotes and !std.unicode.utf8ValidateSlice(str)) {
+            needs_quotes = true;
+        }
+
+        // If the identifier is a KDL keyword, then it also needs to be wrapped in quotes
+        if (!needs_quotes) {
+            inline for (&.{ "true", "false", "null" }) |keyword| {
+                if (str.len > 1 and str[0] == -1 and std.mem.eql(u8, str[1..], keyword)) {
+                    needs_quotes = true;
+                    break;
+                }
+
+                if (std.mem.eql(u8, str, keyword)) {
+                    needs_quotes = true;
+                    break;
+                }
             }
         }
+
+        if (!needs_quotes) {
+            // Check if any character in this string warrants the identifier being
+            // enclosed in quotes
+            var str_iter = std.unicode.Utf8View.initUnchecked(str).iterator();
+
+            while (str_iter.nextCodepoint()) |c| {
+                if (!utf8.isIdentifierChar(c)) {
+                    needs_quotes = true;
+                    break;
+                }
+            }
+        }
+
+        if (needs_quotes) {
+            return fromString(allocator, str);
+        } else {
+            return Token{ .kind = .bare_identifier, .text = try allocator.dupe(u8, str) };
+        }
+    }
+
+    pub fn fromString(allocator: Allocator, str: []const u8) !Token {
+        // Make the initial size be the length of the string plus the two double quotes on each size
+        var buffer = try ArrayList(u8).initCapacity(allocator, str.len + 2);
+        errdefer buffer.deinit();
+
+        // Opening double quote
+        try buffer.append('"');
+
+        // We copy contiguous chunks of non-escaped characters all at once to improve performance
+        // Here in this variable we save the start position of the current chunk
+        // So when we find an escaped character, we can write all characters
+        // starting from this position to the buffer
+        var last_chunk_start: usize = 0;
+
+        for (str, 0..) |char, i| {
+            // Detect escaped characters
+            if (indexOfChar(escaped_replacements, char)) |index| {
+                // If we have something to copy before this char, copy all at once
+                if (last_chunk_start < i) {
+                    try buffer.appendSlice(str[last_chunk_start..i]);
+                }
+
+                // Replace the special characters into their string representations
+                // such as "\n", "\t", etc...
+                try buffer.append('\\');
+                try buffer.append(escaped_codes[index]);
+
+                last_chunk_start = i + 1;
+            }
+        }
+
+        // If this is the last character, make sure we flush any chunks
+        // we need to copy to the buffer
+        if (last_chunk_start < str.len) {
+            try buffer.appendSlice(str[last_chunk_start..str.len]);
+        }
+
+        // Closing double quote
+        try buffer.append('"');
+
+        return Token{ .kind = .escaped_string, .text = try buffer.toOwnedSlice() };
+    }
+
+    pub fn fromInteger(allocator: Allocator, int: i64) !Token {
+        // Convert the integer to string
+        const int_str = try std.fmt.allocPrint(allocator, "{d}", .{int});
+        errdefer allocator.free(int_str);
+
+        return Token{ .kind = .signed_integer, .text = int_str };
+    }
+
+    pub fn fromDecimal(allocator: Allocator, dec: f64) !Token {
+        // Convert the decimal to string
+        const dec_str = blk: {
+            if (@mod(dec, 1) == 0) {
+                break :blk try std.fmt.allocPrint(allocator, "{d}.0", .{dec});
+            } else {
+                break :blk try std.fmt.allocPrint(allocator, "{e}", .{dec});
+            }
+        };
+        errdefer allocator.free(dec_str);
+        std.mem.replaceScalar(u8, dec_str, 'e', 'E');
+
+        return Token{ .kind = .decimal, .text = dec_str };
+    }
+
+    pub fn fromBoolean(bit: bool) Token {
+        return Token{ .kind = .keyword, .text = if (bit) "true" else "false" };
+    }
+
+    pub fn fromNone() Token {
+        return Token{ .kind = .keyword, .text = "null" };
+    }
+
+    pub fn fromScalar(allocator: Allocator, scalar: Scalar) !Token {
+        return switch (scalar) {
+            .string => |str| fromString(allocator, str),
+            .integer => |int| fromInteger(allocator, int),
+            .decimal => |dec| fromDecimal(allocator, dec),
+            .boolean => |bit| fromBoolean(bit),
+            .none => fromNone(),
+        };
     }
 
     pub const Scalar = union(enum) {
@@ -246,7 +376,7 @@ pub const Token = struct {
         boolean: bool,
         none: void,
 
-        pub fn deinit(self: *Scalar, allocator: Allocator) void {
+        pub fn deinit(self: *const Scalar, allocator: Allocator) void {
             if (self.* == .string) {
                 allocator.free(self.string);
             }
@@ -298,6 +428,7 @@ pub const TokenMatchers = struct {
     pub const signed_integer = Matcher.sequence(.{
         sign.optional(),
         integer,
+        exponent.optional(),
     });
 
     // decimal := sign? integer ('.' integer)? exponent?
@@ -373,15 +504,8 @@ pub const TokenMatchers = struct {
         Matcher.string("false"),
     });
 
-    // escline := '\\' ws* (single-line-comment | newline)
-    pub const escline = Matcher.sequence(.{
-        Matcher.char('\\'),
-        ws.repeat(.{}),
-        Matcher.oneOf(.{
-            single_line_comment,
-            newline,
-        }),
-    });
+    // escline := '\\'
+    pub const escline = Matcher.char('\\');
 
     // linespace := newline | ws | single-line-comment
     pub const linespace = Matcher.oneOf(.{
@@ -409,10 +533,7 @@ pub const TokenMatchers = struct {
             newline.negate(),
             Matcher.any(),
         }).atLeastOnce(),
-        // Matcher.oneOf(.{
-        //     newline,
-        //     Matcher.eof(),
-        // }),
+        Matcher.newline().optional(),
     });
 
     // multi-line-comment := '/*' commented-block
@@ -428,6 +549,9 @@ pub const TokenMatchers = struct {
         }).repeat(.{}),
         Matcher.string("*/"),
     });
+
+    // equals := '='
+    pub const slashdash = Matcher.string("/-");
 
     // equals := '='
     pub const equals = Matcher.char('=');
@@ -490,6 +614,8 @@ pub const Tokenizer = struct {
 
     location_start: Location = .{},
 
+    ended: bool = false,
+
     pub fn init(source: []const u8) !Tokenizer {
         return Tokenizer{
             .reader = try Reader.init(source),
@@ -497,8 +623,9 @@ pub const Tokenizer = struct {
     }
 
     pub fn next(self: *Tokenizer) !?Token {
-        while (self.reader.state != .eof) {
+        if (self.ended == false) {
             if (self.match(TokenMatchers.eof)) {
+                self.ended = true;
                 return self.createToken(.eof);
             }
 
@@ -516,6 +643,10 @@ pub const Tokenizer = struct {
 
             if (self.match(TokenMatchers.escline)) {
                 return self.createToken(.escline);
+            }
+
+            if (self.match(TokenMatchers.slashdash)) {
+                return self.createToken(.slashdash);
             }
 
             if (self.match(TokenMatchers.equals)) {
@@ -736,6 +867,19 @@ test "Read tokens" {
     try expectToken(&tokenizer, .eof, "");
 }
 
+test "Read tokens with comments between" {
+    var tokenizer = try Tokenizer.init(
+        \\node /* comment */ "foo"
+    );
+
+    try expectToken(&tokenizer, .bare_identifier, "node");
+    try expectToken(&tokenizer, .ws, " ");
+    try expectToken(&tokenizer, .ws, "/* comment */");
+    try expectToken(&tokenizer, .ws, " ");
+    try expectToken(&tokenizer, .escaped_string, "\"foo\"");
+    try expectToken(&tokenizer, .eof, "");
+}
+
 test "Read tokens identifiers vs keywords" {
     var tokenizer = try Tokenizer.init(
         \\bare trueId=true falseId=false nullId=null "true"=false
@@ -762,6 +906,13 @@ test "Read tokens identifiers vs keywords" {
     try expectToken(&tokenizer, .equals, "=");
     try expectToken(&tokenizer, .keyword, "false");
     try expectToken(&tokenizer, .eof, "");
+}
+
+fn expectTokenFromString(allocator: Allocator, src: []const u8, expected: []const u8) !void {
+    var token = try Token.fromString(allocator, src);
+    defer token.deinitFromScalar(allocator);
+
+    try std.testing.expectEqualStrings(expected, token.text);
 }
 
 fn expectTokenString(allocator: Allocator, src: []const u8, expected: []const u8) !void {
@@ -807,6 +958,22 @@ test "Token toString" {
     try expectTokenRawString(allocator, "r#\"a\"#", "a");
     try expectTokenRawString(allocator, "r\"\"", "");
     try expectTokenRawString(allocator, "r\"a\"", "a");
+}
+
+test "Token toString all escapes" {
+    var allocator = std.testing.allocator;
+
+    try expectTokenString(allocator,
+        \\"\"\\\/\b\f\n\r\t"
+    , "\"\\/\x08\x0C\n\r\t");
+}
+
+test "Token fromString all escapes" {
+    var allocator = std.testing.allocator;
+
+    try expectTokenFromString(allocator, "\"\\/\x08\x0C\n\r\t",
+        \\"\"\\/\b\f\n\r\t"
+    );
 }
 
 /// Utility function, prints the code to generate assertions for a given tokenizer

@@ -304,6 +304,8 @@ pub const RawQuotedStringMatcher = struct {
             if (ending) {
                 if (char == utf8.fromASCII('#')) {
                     hashes_end_count += 1;
+                } else if (char == utf8.fromASCII('"')) {
+                    hashes_end_count = 0;
                 } else {
                     hashes_end_count = 0;
                     ending = false;

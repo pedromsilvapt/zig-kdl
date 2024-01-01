@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const Token = @import("./tokens.zig").Token;
@@ -21,10 +22,180 @@ pub const Element = union(enum) {
         data: Token,
     };
 
+    pub const Slashdash = struct {
+        scope: SlashdashScope,
+    };
+
+    pub const SlashdashScope = enum { node, node_children, property_or_argument };
+
     node_begin: NodeBegin,
     node_end: void,
     property: Property,
     argument: Value,
+    slashdash: Slashdash,
+
+    pub fn toOwned(self: *const Element, allocator: Allocator) !ElementOwned {
+        switch (self.*) {
+            .node_begin => |node| {
+                var name = try node.name.toString(allocator);
+                errdefer allocator.free(name);
+
+                var type_name = if (node.type_name) |type_name_token|
+                    try type_name_token.toString(allocator)
+                else
+                    null;
+                errdefer if (type_name) |type_name_str| allocator.free(type_name_str);
+
+                return ElementOwned{
+                    .node_begin = .{
+                        .name = name,
+                        .type_name = type_name,
+                    },
+                };
+            },
+            .node_end => {
+                return ElementOwned{ .node_end = {} };
+            },
+            .property => |prop| {
+                var name = try prop.name.toString(allocator);
+                errdefer allocator.free(name);
+
+                var type_name = if (prop.value.type_name) |type_name_token|
+                    try type_name_token.toString(allocator)
+                else
+                    null;
+                errdefer if (type_name) |type_name_str| allocator.free(type_name_str);
+
+                var data = try prop.value.data.toScalar(allocator);
+                errdefer data.deinit(allocator);
+
+                return ElementOwned{
+                    .property = .{
+                        .name = name,
+                        .value = .{ .data = data, .type_name = type_name },
+                    },
+                };
+            },
+            .argument => |value| {
+                var data = try value.data.toScalar(allocator);
+                errdefer data.deinit(allocator);
+
+                var type_name = if (value.type_name) |type_name_token|
+                    try type_name_token.toString(allocator)
+                else
+                    null;
+                errdefer if (type_name) |type_name_str| allocator.free(type_name_str);
+
+                return ElementOwned{ .argument = .{
+                    .data = data,
+                    .type_name = type_name,
+                } };
+            },
+            .slashdash => |slashdash| {
+                return ElementOwned{ .slashdash = slashdash };
+            },
+        }
+    }
+};
+
+pub const ElementOwned = union(enum) {
+    pub const NodeBegin = struct {
+        name: []const u8,
+        type_name: ?[]const u8,
+
+        pub fn deinit(self: *const NodeBegin, allocator: Allocator) void {
+            allocator.free(self.name);
+
+            if (self.type_name) |type_name| {
+                allocator.free(type_name);
+            }
+        }
+    };
+
+    pub const Property = struct {
+        name: []const u8,
+        value: Value,
+
+        pub fn deinit(self: *const Property, allocator: Allocator) void {
+            allocator.free(self.name);
+
+            self.value.deinit(allocator);
+        }
+    };
+
+    pub const Value = struct {
+        type_name: ?[]const u8,
+        data: Token.Scalar,
+
+        pub fn deinit(self: *const Value, allocator: Allocator) void {
+            self.data.deinit(allocator);
+
+            if (self.type_name) |type_name| {
+                allocator.free(type_name);
+            }
+        }
+    };
+
+    pub const Slashdash = Element.Slashdash;
+
+    pub const SlashdashScope = Element.SlashdashScope;
+
+    node_begin: NodeBegin,
+    node_end: void,
+    property: Property,
+    argument: Value,
+    slashdash: Slashdash,
+
+    pub fn initNodeBegin(name: []const u8, type_name: ?[]const u8) ElementOwned {
+        return .{
+            .node_begin = .{
+                .name = name,
+                .type_name = type_name,
+            },
+        };
+    }
+
+    pub fn initNodeEnd() Element {
+        return .{ .node_end = {} };
+    }
+
+    pub fn initProperty(name: []const u8, data: Token.Scalar, type_name: ?[]const u8) !ElementOwned {
+        return .{
+            .property = .{
+                .name = name,
+                .value = .{
+                    .type_name = type_name,
+                    .data = data,
+                },
+            },
+        };
+    }
+
+    pub fn initArgument(data: Token.Scalar, type_name: ?[]const u8) !ElementOwned {
+        return .{
+            .argument = .{
+                .type_name = type_name,
+                .data = data,
+            },
+        };
+    }
+
+    pub fn initSlashdash(scope: SlashdashScope) ElementOwned {
+        return .{
+            .slashdash = .{
+                .scope = scope,
+            },
+        };
+    }
+
+    pub fn deinit(self: *const ElementOwned, allocator: Allocator) void {
+        switch (self.*) {
+            .node_begin => |node| node.deinit(allocator),
+            .property => |prop| prop.deinit(allocator),
+            .argument => |value| value.deinit(allocator),
+            .slashdash, .node_end => {},
+        }
+    }
 };
 
 /// TODO Sync any changes made to this parser, to the FSM diagram stored in
@@ -35,11 +206,13 @@ pub const Parser = struct {
 
         nodes: void,
 
+        node_begin_slashdash: void,
         node_begin_type: void,
         node_begin_type_id: NodeType,
         node_begin_type_end: NodeType,
         node_begin_identifier: NodeBegin,
         node_begin_identifier_space: void,
+        node_inner_slashdash: void,
         node_children: void,
         node_end: NodeEnd,
 
@@ -57,6 +230,7 @@ pub const Parser = struct {
         argument_type_id: ArgumentType,
         argument_type_end: ArgumentType,
 
+        escline: Escline,
         end: void,
 
         pub const NodeType = struct {
@@ -99,6 +273,12 @@ pub const Parser = struct {
         pub const ArgumentType = struct {
             type_name: Token,
         };
+
+        pub const Escline = union(enum) {
+            node_begin_slashdash: void,
+            node_inner_slashdash: void,
+            node_begin_identifier_space: void,
+        };
     };
 
     pub const StateTag = std.meta.Tag(State);
@@ -109,15 +289,21 @@ pub const Parser = struct {
 
     tokenizer: Tokenizer,
 
-    next_element: ?Element = null,
+    next_elements: CircularBuffer(Element, 3) = .{},
+
+    slashdash_filter: SlashdashElementsFilter = .{},
 
     state: State = .start,
 
     depth: usize = 0,
 
-    double_end: bool = false,
+    has_children: bool = true,
 
     transitioned: bool = false,
+
+    /// Field which controls if this parser should print debugging messages
+    /// Is only available when building in debug mode, for performance reasons
+    debug: bool = false,
 
     pub fn init(source: []const u8) !Parser {
         return Parser{
@@ -125,13 +311,29 @@ pub const Parser = struct {
         };
     }
 
+    fn log(self: *Parser, comptime format: []const u8, args: anytype) void {
+        // Comptime check to improve performance on non-debug builds
+        if (builtin.mode == .Debug) {
+            if (self.debug) {
+                std.log.warn(format, args);
+            }
+        }
+    }
+
     fn transition(self: *Parser, comptime state: StateTag, payload: StatePayload(state)) !void {
+        std.debug.assert(self.transitioned == false);
+
+        // Debug helper
+        const cursor = self.tokenizer.reader.location;
+        self.log("New state: " ++ @tagName(state) ++ " at cursor pos Line {d} Col {d}.", .{ cursor.line, cursor.column });
+
         var new_state = @unionInit(State, @tagName(state), payload);
 
         inline for (std.meta.fields(StateTag)) |field| {
             if (self.state == @field(StateTag, field.name)) {
                 const leave_method_name = "leave_" ++ field.name;
                 if (@hasDecl(Parser, leave_method_name)) {
+                    self.log("  Calling " ++ leave_method_name ++ "...", .{});
                     try @call(.auto, @field(Parser, leave_method_name), .{ self, new_state });
                 }
             }
@@ -139,6 +341,7 @@ pub const Parser = struct {
 
         const enter_method_name = "enter_" ++ @tagName(state);
         if (@hasDecl(Parser, enter_method_name)) {
+            self.log("  Calling " ++ enter_method_name ++ "...", .{});
             try @call(.auto, @field(Parser, enter_method_name), .{ self, payload });
         }
 
@@ -148,46 +351,89 @@ pub const Parser = struct {
     }
 
     pub fn enter_node_end(self: *Parser, new_state: StatePayload(.node_end)) !void {
-        _ = new_state;
-
-        assert(self.next_element == null);
-
         if (self.depth == 0) {
             return error.ParseError;
         }
 
+        self.log(">> Node end, depth {d}", .{self.depth});
+
         self.depth -= 1;
 
-        self.next_element = Element{
+        self.enqueue(Element{
             .node_end = {},
-        };
+        });
+
+        // If we are closig a node with braces, and it has no children, we need to emit two
+        // consecutive .node_end elements
+        // For example, when we have the following scenario: node1 { node2 }
+        if (!self.has_children and new_state.braces) {
+            if (self.depth == 0) {
+                return error.ParseError;
+            }
+
+            self.depth -= 1;
+
+            self.enqueue(Element{
+                .node_end = {},
+            });
+        }
+
+        // If we just closed a node, that means we are now one level up
+        // And the node on that level (the parent node) for sure has children
+        // At least, it must always have the node we just closed as a child!
+        self.has_children = true;
+    }
+
+    pub fn enter_node_begin_slashdash(self: *Parser, new_state: StatePayload(.node_begin_slashdash)) !void {
+        _ = new_state;
+
+        self.enqueue(Element{ .slashdash = .{ .scope = .node } });
     }
 
     pub fn enter_node_begin_identifier(self: *Parser, new_state: StatePayload(.node_begin_identifier)) !void {
-        assert(self.next_element == null);
-
-        self.double_end = true;
+        self.has_children = false;
 
         self.depth += 1;
 
-        self.next_element = Element{
+        self.enqueue(Element{
             .node_begin = .{
                 .name = new_state.name,
                 .type_name = new_state.type_name,
             },
-        };
+        });
+    }
+
+    pub fn leave_node_inner_slashdash(self: *Parser, new_state: State) !void {
+        // If we just found a whitespace or something similar, do nothing
+        // Similarly,since we know that when we go to .escline, we will have to go back again,
+        // we do nothing for now and wait for when we really exit the state
+        if (new_state == .node_inner_slashdash or new_state == .escline) {
+            return;
+        }
+
+        if (new_state == .node_children) {
+            self.enqueue(Element{
+                .slashdash = .{
+                    .scope = .node_children,
+                },
+            });
+        } else {
+            self.enqueue(Element{
+                .slashdash = .{
+                    .scope = .property_or_argument,
+                },
+            });
+        }
     }
 
     pub fn enter_node_children(self: *Parser, new_state: StatePayload(.node_children)) !void {
         _ = new_state;
 
-        self.double_end = false;
+        self.has_children = true;
     }
 
     pub fn enter_property_value_end(self: *Parser, new_state: StatePayload(.property_value_end)) !void {
-        assert(self.next_element == null);
-
-        self.next_element = Element{
+        self.enqueue(Element{
             .property = .{
                 .name = new_state.name,
                 .value = .{
@@ -195,64 +441,74 @@ pub const Parser = struct {
                     .data = new_state.value_data,
                 },
             },
-        };
+        });
     }
 
     pub fn enter_argument(self: *Parser, new_state: StatePayload(.argument)) !void {
-        assert(self.next_element == null);
-
-        self.next_element = Element{
+        self.enqueue(Element{
             .argument = .{
                 .type_name = new_state.type_name,
                 .data = new_state.value_data,
             },
-        };
+        });
     }
 
     pub fn leave_property_or_argument(self: *Parser, new_state: State) !void {
         if (new_state == .node_end or
             new_state == .node_begin_identifier_space or
-            new_state == .node_children)
+            new_state == .node_children or
+            new_state == .end)
         {
-            assert(self.next_element == null);
-
             const argument_value = self.state.property_or_argument.name;
 
-            self.next_element = Element{
+            self.enqueue(Element{
                 .argument = .{
                     .type_name = null,
                     .data = argument_value,
                 },
-            };
+            });
+        }
+    }
+
+    fn enqueue(self: *Parser, element: Element) void {
+        if (!self.slashdash_filter.check(element)) {
+            self.log(" ! Emitting node {?}", .{element});
+
+            self.next_elements.enqueueAssumeCapacity(element);
+        } else {
+            self.log(" ! Skipping node {?}", .{element});
         }
     }
 
     pub fn next(self: *Parser) !?Element {
         @setEvalBranchQuota(10000);
 
-        var element: ?Element = null;
-
-        if (self.state == .node_end and
-            self.double_end and
-            self.state.node_end.braces and
-            self.depth > 0)
-        {
-            self.double_end = false;
-
-            self.depth -= 1;
-
-            return Element{ .node_end = {} };
-        }
-
-        loop: while (self.state != .end) {
+        return loop: while (true) {
             self.transitioned = false;
 
+            // If there are no more elements queued, but our depth is still to big, we
+            // need to emit as many .node_end elements as possible to get the depth to zero
+            if (self.state == .end and self.next_elements.len == 0 and self.depth > 0) {
+                self.depth -= 1;
+
+                self.enqueue(Element{ .node_end = {} });
+            }
+
+            var element = self.next_elements.tryDequeue();
+
+            if (element != null or self.state == .end) {
+                break :loop element;
+            }
+
             if (try self.tokenizer.next()) |token| {
+                self.log("Read token {any}: <<{s}>>", .{ token.kind, token.text });
+
                 switch (self.state) {
                     .start, .nodes => {
                         // Ignore line spaces, keep the same state
-                        if (token.kind == .newline or
-                            token.kind == .ws or
+                        if (token.kind == .ws or
+                            // token.kind == .escline or
+                            token.kind == .newline or
                             token.kind == .single_line_comment)
                         {
                             try self.transition(.nodes, {});
@@ -264,7 +520,9 @@ pub const Parser = struct {
                             });
                         }
 
-                        // TODO Handle slash-dash
+                        if (token.kind == .slashdash) {
+                            try self.transition(.node_begin_slashdash, {});
+                        }
 
                         if (token.kind == .brace_open) {
                             try self.transition(.node_begin_type, {});
@@ -284,19 +542,45 @@ pub const Parser = struct {
                             try self.transition(.end, {});
                         }
                     },
+                    .node_begin_slashdash => {
+                        if (token.kind == .escline) {
+                            try self.transition(.escline, .{
+                                .node_inner_slashdash = {},
+                            });
+                        }
+
+                        // Ignore line spaces, keep the same state
+                        if (token.kind == .ws) {
+                            try self.transition(.node_begin_slashdash, {});
+                        }
+
+                        if (token.kind == .brace_open) {
+                            try self.transition(.node_begin_type, {});
+                        }
+
+                        if (token.kind == .bare_identifier or
+                            token.kind == .raw_string or
+                            token.kind == .escaped_string)
+                        {
+                            try self.transition(.node_begin_identifier, .{
+                                .name = token,
+                                .type_name = null,
+                            });
+                        }
+                    },
                     .node_begin_type => {
                         if (token.kind == .bare_identifier or
                             token.kind == .raw_string or
                             token.kind == .escaped_string)
                         {
-                            try self.transition(.node_begin_type_id, .{
+                            try self.transition(.node_begin_type_end, .{
                                 .type_name = token,
                             });
                         }
                     },
                     .node_begin_type_end => |state| {
                         if (token.kind == .brace_close) {
-                            try self.transition(.node_begin_type_end, .{
+                            try self.transition(.node_begin_type_id, .{
                                 .type_name = state.type_name,
                             });
                         }
@@ -313,6 +597,12 @@ pub const Parser = struct {
                         }
                     },
                     .node_begin_identifier => {
+                        if (token.kind == .escline) {
+                            try self.transition(.escline, .{
+                                .node_begin_identifier_space = {},
+                            });
+                        }
+
                         // Node terminator
                         if (token.kind == .single_line_comment or
                             token.kind == .newline or
@@ -329,17 +619,20 @@ pub const Parser = struct {
                             try self.transition(.end, {});
                         }
 
-                        if (token.kind == .ws or
-                            token.kind == .escline)
-                        {
+                        if (token.kind == .ws) {
                             try self.transition(.node_begin_identifier_space, {});
                         }
 
-                        if (token.kind == .curly_brace_open) {
-                            try self.transition(.node_children, {});
-                        }
+                        // There is no direct transition to .node_children when curly braces are found,
+                        // because at least one space should always be present between the node identifier and the curly braces
                     },
                     .node_begin_identifier_space => {
+                        if (token.kind == .escline) {
+                            try self.transition(.escline, .{
+                                .node_begin_identifier_space = {},
+                            });
+                        }
+
                         // Node terminator
                         if (token.kind == .single_line_comment or
                             token.kind == .newline or
@@ -355,10 +648,59 @@ pub const Parser = struct {
                             try self.transition(.end, {});
                         }
 
-                        if (token.kind == .ws or
-                            token.kind == .escline)
-                        {
+                        if (token.kind == .ws) {
                             try self.transition(.node_begin_identifier_space, {});
+                        }
+
+                        if (token.kind == .slashdash) {
+                            try self.transition(.node_inner_slashdash, {});
+                        }
+
+                        if (token.kind == .curly_brace_open) {
+                            try self.transition(.node_children, {});
+                        }
+
+                        if (token.kind == .escaped_string or
+                            token.kind == .raw_string)
+                        {
+                            try self.transition(.property_or_argument, .{
+                                .name = token,
+                            });
+                        }
+
+                        if (token.kind == .bare_identifier) {
+                            try self.transition(.property, .{
+                                .name = token,
+                            });
+                        }
+
+                        if (token.kind == .decimal or
+                            token.kind == .signed_integer or
+                            token.kind == .hex or
+                            token.kind == .octal or
+                            token.kind == .binary or
+                            token.kind == .keyword)
+                        {
+                            try self.transition(.argument, .{
+                                .type_name = null,
+                                .value_data = token,
+                            });
+                        }
+
+                        if (token.kind == .brace_open) {
+                            try self.transition(.argument_type, {});
+                        }
+                    },
+                    .node_inner_slashdash => {
+                        if (token.kind == .escline) {
+                            try self.transition(.escline, .{
+                                .node_inner_slashdash = {},
+                            });
+                        }
+
+                        if (token.kind == .ws) // TODO escline vs single line comment (other states as well)
+                        {
+                            try self.transition(.node_inner_slashdash, {});
                         }
 
                         if (token.kind == .curly_brace_open) {
@@ -408,6 +750,10 @@ pub const Parser = struct {
                             try self.transition(.node_begin_type, {});
                         }
 
+                        if (token.kind == .slashdash) {
+                            try self.transition(.node_begin_slashdash, {});
+                        }
+
                         if (token.kind == .bare_identifier or
                             token.kind == .escaped_string or
                             token.kind == .raw_string)
@@ -415,6 +761,12 @@ pub const Parser = struct {
                             try self.transition(.node_begin_identifier, .{
                                 .name = token,
                                 .type_name = null,
+                            });
+                        }
+
+                        if (token.kind == .curly_brace_close) {
+                            try self.transition(.node_end, .{
+                                .braces = true,
                             });
                         }
                     },
@@ -440,6 +792,10 @@ pub const Parser = struct {
                             try self.transition(.node_begin_type, {});
                         }
 
+                        if (token.kind == .slashdash) {
+                            try self.transition(.node_begin_slashdash, {});
+                        }
+
                         if (token.kind == .bare_identifier or
                             token.kind == .escaped_string or
                             token.kind == .raw_string)
@@ -451,6 +807,12 @@ pub const Parser = struct {
                         }
                     },
                     .property_or_argument => |state| {
+                        if (token.kind == .escline) {
+                            try self.transition(.escline, .{
+                                .node_begin_identifier_space = {},
+                            });
+                        }
+
                         if (token.kind == .single_line_comment or
                             token.kind == .newline or
                             token.kind == .semicolon or
@@ -465,10 +827,12 @@ pub const Parser = struct {
                             try self.transition(.end, {});
                         }
 
-                        if (token.kind == .ws or
-                            token.kind == .escline)
-                        {
+                        if (token.kind == .ws) {
                             try self.transition(.node_begin_identifier_space, {});
+                        }
+
+                        if (token.kind == .slashdash) {
+                            try self.transition(.node_inner_slashdash, {});
                         }
 
                         if (token.kind == .curly_brace_open) {
@@ -548,6 +912,12 @@ pub const Parser = struct {
                         }
                     },
                     .property_value_end => {
+                        if (token.kind == .escline) {
+                            try self.transition(.escline, .{
+                                .node_begin_identifier_space = {},
+                            });
+                        }
+
                         if (token.kind == .single_line_comment or
                             token.kind == .newline or
                             token.kind == .semicolon or
@@ -562,10 +932,12 @@ pub const Parser = struct {
                             try self.transition(.end, {});
                         }
 
-                        if (token.kind == .ws or
-                            token.kind == .escline)
-                        {
+                        if (token.kind == .ws) {
                             try self.transition(.node_begin_identifier_space, {});
+                        }
+
+                        if (token.kind == .slashdash) {
+                            try self.transition(.node_inner_slashdash, {});
                         }
 
                         if (token.kind == .curly_brace_open) {
@@ -573,6 +945,12 @@ pub const Parser = struct {
                         }
                     },
                     .argument => {
+                        if (token.kind == .escline) {
+                            try self.transition(.escline, .{
+                                .node_begin_identifier_space = {},
+                            });
+                        }
+
                         if (token.kind == .single_line_comment or
                             token.kind == .newline or
                             token.kind == .semicolon or
@@ -587,10 +965,12 @@ pub const Parser = struct {
                             try self.transition(.end, {});
                         }
 
-                        if (token.kind == .ws or
-                            token.kind == .escline)
-                        {
+                        if (token.kind == .ws) {
                             try self.transition(.node_begin_identifier_space, {});
+                        }
+
+                        if (token.kind == .slashdash) {
+                            try self.transition(.node_inner_slashdash, {});
                         }
 
                         if (token.kind == .curly_brace_open) {
@@ -630,65 +1010,186 @@ pub const Parser = struct {
                             });
                         }
                     },
-                    .end => {
-                        break :loop;
+                    .escline => |state| {
+                        // Ignore line spaces, keep the same state
+                        if (token.kind == .ws) {
+                            try self.transition(.escline, state);
+                        }
+
+                        if (token.kind == .newline or
+                            token.kind == .single_line_comment)
+                        {
+                            switch (state) {
+                                .node_begin_slashdash => |prev_state| try self.transition(.node_begin_slashdash, prev_state),
+                                .node_inner_slashdash => |prev_state| try self.transition(.node_inner_slashdash, prev_state),
+                                .node_begin_identifier_space => |prev_state| try self.transition(.node_begin_identifier_space, prev_state),
+                            }
+                        }
                     },
+                    .end => {},
                 }
+            } else {
+                self.log("No token emitted.", .{});
             }
 
-            if (self.transitioned) {
-                if (self.next_element) |elem| {
-                    element = elem;
-
-                    self.next_element = null;
-
-                    break :loop;
-                }
-            } else if (self.state != .end) {
+            if (!self.transitioned and self.state != .end) {
                 return error.ParseError;
             }
-        }
-
-        if (self.state == .end and element == null and self.depth > 0) {
-            self.depth -= 1;
-
-            element = Element{ .node_end = {} };
-        }
-
-        return element;
+        };
     }
-
-    // pub fn freeElement(self: *const Parser, scalar: Element) void {
-    //     switch (element) {
-    //         .node_begin => |payload| {
-    //             self.allocator.free(payload.name);
-
-    //             if (payload.type_name) |type_name| {
-    //                 self.allocator.free(type_name);
-    //             }
-    //         },
-    //         .property => |payload| {
-    //             self.allocator.free(payload.name);
-
-    //             self.freeValue(payload.value);
-    //         },
-    //         .argument => |payload| {
-    //             self.freeValue(payload);
-    //         },
-    //         else => {},
-    //     }
-    // }
-
-    // pub fn freeValue(self: *const Parser, value: Element.Value) void {
-    //     if (value.type_name) |type_name| {
-    //         self.allocator.free(type_name);
-    //     }
-
-    //     if (value.data == .string) {
-    //         self.allocator.free(value.data.string);
-    //     }
-    // }
 };
+
+// Receives all elements emitted by the parser, and provides an easy way to know
+// if the element in question is part of a slashdash comment or not.
+pub const SlashdashElementsFilter = struct {
+    /// When this flag is false, the `test` method will return false for elements
+    /// outside slashdash comments and true for elements inside.
+    /// When it is true, it will reverse those values
+    invert: bool = false,
+    _slashdash_scope: ?Element.SlashdashScope = null,
+    _slashdash_depth: i32 = 0,
+
+    pub fn check(self: *SlashdashElementsFilter, element: Element) bool {
+        var is_inside_slashdash = false;
+
+        switch (element) {
+            .slashdash => |slashdash| {
+                // If we are inside a slashdash, no matter what type, and we find
+                // another slashdash comment, nothing really changes. Only the first
+                // slashdash we find counts, everything else inside of
+                // it can be assumed to be inside a slashdash comment
+                is_inside_slashdash = true;
+                if (self._slashdash_scope == null) {
+                    self._slashdash_scope = slashdash.scope;
+
+                    // When the scope is .node, we will receive a .node_begin (which will
+                    // increase the depth by 1) , and so it's matching node_end will
+                    // be received when the depth == 1, and will close the slashdash there.
+                    // But for scope == .node_children, the .node_begin will already have
+                    // been emitted before the slashdash, which means the next .node_begin
+                    // will be for one of the children. And we don't want to close the slashdash
+                    // comment right after the node_end of the first child node, we want only after
+                    // the node_end of the parent node (one level up)
+                    // That's why we make the depth start in 1 instead of 0, we it takes one
+                    // extra .node_end to close the slashdash comment
+                    if (slashdash.scope == .node_children) {
+                        self._slashdash_depth = 1;
+                    }
+                }
+            },
+            .node_begin => {
+                if (self._slashdash_scope != null) {
+                    self._slashdash_depth += 1;
+                    is_inside_slashdash = true;
+                }
+            },
+            .node_end => {
+                if (self._slashdash_scope != null) {
+                    std.debug.assert(self._slashdash_depth > 0);
+
+                    self._slashdash_depth -= 1;
+
+                    is_inside_slashdash = self._slashdash_depth > 0 or self._slashdash_scope.? == .node;
+
+                    if (self._slashdash_depth == 0) {
+                        self._slashdash_scope = null;
+                    }
+                }
+            },
+            .argument, .property => {
+                if (self._slashdash_scope) |scope| {
+                    is_inside_slashdash = true;
+
+                    if (scope == .property_or_argument) {
+                        self._slashdash_scope = null;
+                    }
+                }
+            },
+        }
+
+        if (self.invert) {
+            return !is_inside_slashdash;
+        } else {
+            return is_inside_slashdash;
+        }
+    }
+};
+
+fn CircularBuffer(comptime T: type, comptime N: comptime_int) type {
+    return struct {
+        const Self = @This();
+
+        data: [N]T = undefined,
+        len: usize = 0,
+        capacity: usize = N,
+        _cursor: usize = N,
+
+        pub fn get(self: *const Self, index: usize) T {
+            std.debug.assert(index >= 0);
+            std.debug.assert(index < self.len);
+
+            const real_index = (N + self._cursor - self.len + index) % N;
+
+            return self.data[real_index];
+        }
+
+        pub fn enqueue(self: *Self, value: T) !void {
+            if (self.len >= N) return error.NoCapacity;
+
+            self.data[self._cursor % N] = value;
+
+            self._cursor = (self._cursor + 1) % N;
+            self.len += 1;
+        }
+
+        pub fn enqueueAssumeCapacity(self: *Self, value: T) void {
+            self.enqueue(value) catch unreachable;
+        }
+
+        pub fn dequeue(self: *Self) !T {
+            if (self.len <= 0) return error.EmptyBuffer;
+
+            var value = self.get(0);
+
+            self.len -= 1;
+
+            return value;
+        }
+
+        pub fn tryDequeue(self: *Self) ?T {
+            return if (self.len > 0)
+                self.dequeue() catch unreachable
+            else
+                null;
+        }
+    };
+}
+
+test "CircularBuffer" {
+    var buffer = CircularBuffer(i32, 3){};
+
+    try std.testing.expectEqual(@as(usize, 0), buffer.len);
+    try std.testing.expectEqual(@as(usize, 3), buffer.capacity);
+
+    try buffer.enqueue(1);
+    try buffer.enqueue(2);
+    try buffer.enqueue(3);
+
+    try std.testing.expectEqual(@as(usize, 3), buffer.len);
+    try std.testing.expectEqual(@as(i32, 1), buffer.get(0));
+    try std.testing.expectEqual(@as(i32, 2), buffer.get(1));
+    try std.testing.expectEqual(@as(i32, 3), buffer.get(2));
+
+    try std.testing.expectEqual(@as(i32, 1), try buffer.dequeue());
+    try buffer.enqueue(4);
+    try std.testing.expectEqual(@as(i32, 2), try buffer.dequeue());
+    try std.testing.expectEqual(@as(i32, 3), try buffer.dequeue());
+    try buffer.enqueue(5);
+    try std.testing.expectEqual(@as(i32, 4), try buffer.dequeue());
+    try std.testing.expectEqual(@as(i32, 5), try buffer.dequeue());
+
+    try std.testing.expectEqual(@as(usize, 0), buffer.len);
+}
 
 fn expectNodeBegin(parser: *Parser, allocator: Allocator, name: []const u8, type_name: ?[]const u8) !void {
     var element = try parser.next();
@@ -696,7 +1197,7 @@ fn expectNodeBegin(parser: *Parser, allocator: Allocator, name: []const u8, type
     // Make sure the element is not null
     try std.testing.expect(element != null);
 
-    try std.testing.expect(element.? == .node_begin);
+    try std.testing.expectEqualStrings("node_begin", @tagName(element.?));
 
     // Get the name string
     const actual_name = try element.?.node_begin.name.toString(allocator);
@@ -722,7 +1223,7 @@ fn expectNodeEnd(parser: *Parser) !void {
     // Make sure the element is not null
     try std.testing.expect(element != null);
 
-    try std.testing.expect(element.? == .node_end);
+    try std.testing.expectEqualStrings("node_end", @tagName(element.?));
 }
 
 fn expectProperty(parser: *Parser, allocator: Allocator, name: []const u8, value: anytype, type_name: ?[]const u8) !void {
@@ -731,7 +1232,7 @@ fn expectProperty(parser: *Parser, allocator: Allocator, name: []const u8, value
     // Make sure the element is not null
     try std.testing.expect(element != null);
 
-    try std.testing.expect(element.? == .property);
+    try std.testing.expectEqualStrings("property", @tagName(element.?));
 
     // Get the name string
     const actual_name = try element.?.property.name.toString(allocator);
@@ -759,7 +1260,7 @@ fn expectArgument(parser: *Parser, allocator: Allocator, value: anytype, type_na
     // Make sure the element is not null
     try std.testing.expect(element != null);
 
-    try std.testing.expect(element.? == .argument);
+    try std.testing.expectEqualStrings("argument", @tagName(element.?));
 
     try expectValueData(allocator, element.?.argument.data, value);
 
@@ -880,6 +1381,19 @@ test "Terminate curly braces same line" {
     try expectArgument(&parser, allocator, true, null);
     try expectArgument(&parser, allocator, {}, null);
     try expectNodeEnd(&parser);
+    try expectNodeEnd(&parser);
+    try expectNull(&parser);
+}
+
+test "Multiline comments between node and value" {
+    var allocator = std.testing.allocator;
+
+    var parser = try Parser.init(
+        \\ node /* comment */ "arg"
+    );
+
+    try expectNodeBegin(&parser, allocator, "node", null);
+    try expectArgument(&parser, allocator, "arg", null);
     try expectNodeEnd(&parser);
     try expectNull(&parser);
 }

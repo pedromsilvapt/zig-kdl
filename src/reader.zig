@@ -157,6 +157,20 @@ pub const utf8 = struct {
             char == 0x2028 or // Line Separator
             char == 0x2029; // Paragraph Separator
     }
+
+    pub fn isIdentifierChar(char: CodePoint) bool {
+        if (isNewLine(char)) {
+            return false;
+        }
+
+        inline for ("\\/(){}<>;[]=,\"") |invalid_char| {
+            if (char == invalid_char) {
+                return false;
+            }
+        }
+
+        return true;
+    }
 };
 
 pub const Location = struct {
